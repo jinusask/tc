@@ -1,6 +1,7 @@
 var _ = require('lodash')
   , ejs = require('ejs')
   , fs = require('fs')
+  , path = require('path')
   , crypto = require('crypto')
   , async = require('async')
   , express = require('express')
@@ -13,15 +14,15 @@ var _ = require('lodash')
   , config = require('../config')
   , gridfs = require('../utils/gridfs')
   , libxml = require('libxmljs')
-  , Action = models.Action
   , Community = models.Community
+  , Action = models.Action
   , User = models.User
   , Doc = models.Doc
   , Entity = models.Entity
   , Revision = models.Revision
   , TEI = models.TEI
+  , RESTError = require('./resterror')
 ;
-
 
 router.use(function(req, res, next) {
   res.set({
@@ -37,6 +38,16 @@ router.use('/docs', require('./doc'));
 var CommunityResource = _.inherit(Resource, function(opts) {
   Resource.call(this, Community, opts);
 }, {
+  execSave: function(req, res, next) {
+    return function(obj, cb) {
+      obj.save(function(err, obj, numberAffected) {
+        if (!err && req.body.dtd) {
+          obj.setDTD(req.body.dtd);
+        }
+        return cb(err, obj);
+      });
+    };
+  },
   afterCreate: function(req, res, next) {
     return function(community, cb) {
       var  user = req.user;
@@ -50,6 +61,7 @@ var CommunityResource = _.inherit(Resource, function(opts) {
     };
   }
 });
+new CommunityResource({id: 'community'}).serve(router, 'communities');
 router.get('/communities/:id/memberships/', function(req, res, next) {
   User.find({
     memberships: {
@@ -64,29 +76,6 @@ router.get('/communities/:id/memberships/', function(req, res, next) {
   });
 });
 
-var EntityResource = _.inherit(Resource, function(opts) {
-  Resource.call(this, Entity, opts);
-});
-
-
-var entityResource = new EntityResource({id: 'entity'});
-entityResource.serve(router, 'entities');
-router.get('/entities/:id/docs/:docId', function(req, res, next) {
-  var docId = req.params.docId
-    , entityId = req.params.id
-  ;
-  Entity.getDocs(entityId, docId, function(err, docs) {
-    if (err) {
-      return next(err);
-    }
-    res.json(docs);
-  });
-});
-
-var userResource = new Resource(User, {id: 'user'});
-userResource.serve(router, 'users');
-
-new CommunityResource({id: 'community'}).serve(router, 'communities');
 router.put('/communities/:id/add-member', function(req, res, next) {
   var communityId = req.params.id
     , userId = req.body.user
@@ -120,6 +109,51 @@ router.put('/communities/:id/add-member', function(req, res, next) {
     }
   });
 });
+
+var RevisionResource = _.inherit(Resource, function(opts) {
+  Resource.call(this, Revision, opts);
+}, {
+  beforeCreate: function(req, res, next) {
+    var obj = new this.model(req.body);
+    if (!obj.user) {
+      obj.user = req.user;
+    }
+    return function(cb) {
+      return cb(null, obj);
+    };
+  },
+  afterCreate: function(req, res, next) {
+    return function(revision, cb) {
+      Revision.findOne({_id: revision._id}).populate('user').exec(cb);
+    };
+  }
+});
+var revisionResource = new RevisionResource({id: 'revision'});
+revisionResource.serve(router, 'revisions');
+
+
+
+var EntityResource = _.inherit(Resource, function(opts) {
+  Resource.call(this, Entity, opts);
+});
+
+
+var entityResource = new EntityResource({id: 'entity'});
+entityResource.serve(router, 'entities');
+router.get('/entities/:id/docs/:docId', function(req, res, next) {
+  var docId = req.params.docId
+    , entityId = req.params.id
+  ;
+  Entity.getDocs(entityId, docId, function(err, docs) {
+    if (err) {
+      return next(err);
+    }
+    res.json(docs);
+  });
+});
+
+var userResource = new Resource(User, {id: 'user'});
+userResource.serve(router, 'users');
 
 
 function confirmMembership(action) {
@@ -312,26 +346,51 @@ router.post('/sendmail', function(req, res, next) {
 
 router.post('/validate', function(req, res, next) {
   var xmlDoc, errors;
-  try {
-    xmlDoc = libxml.parseXml(req.body.xml);
-    xmlDoc.setDtd('TEI', 'TEI-TC', './data/TEI-transcr-TC.dtd');
-    xmlDoc = libxml.parseXml(xmlDoc.toString(), {
-      dtdvalid: true,
-    })
-    errors = xmlDoc.errors;
-  } catch (err) {
-    errors = [err];
-  }
-  res.json({
-    error:   _.map(errors, function(err) {
-      return _.assign({}, err, {
-        message: err.message,
-      });
-    }),
+  Community.findOne({_id: req.query.id}, function(err, community) {
+    if (err) return next(err);
+    let dtdPath = community.getDTDPath();
+    try {
+      fs.statSync(dtdPath);
+    } catch (e) {
+      dtdPath = './data/TEI-transcr-TC.dtd';
+    }
+    try {
+      xmlDoc = libxml.parseXml(req.body.xml);
+      xmlDoc.setDtd('TEI', 'TEI-TC', dtdPath);
+      xmlDoc = libxml.parseXml(xmlDoc.toString(), {
+        dtdvalid: true,
+      })
+      errors = xmlDoc.errors;
+    } catch (err) {
+      errors = [err];
+    }
+    res.json({
+      error:   _.map(errors, function(err) {
+        return _.assign({}, err, {
+          message: err.message,
+        });
+      }),
+    });
   });
 });
 
+router.use(function(err, req, res, next) {
+  if (err) {
+    res.status(err.status || 500);
+    if (err && err.code === 11000) {
+      var msg = /\$(.*)_.*\{ : (.*) }/.exec(err.message);
+      console.log(err);
+      err = {
+        name: err.name,
+        message: `There is already a community with the ${msg[1]} ${msg[2]}`,
+      };
+    }
+    res.json(err);
+  }
+});
+
 module.exports = router;
+
 /*
 <text>
 <body>

@@ -2,48 +2,66 @@ var Http = ng.http.Http
   , forwardRef = ng.core.forwardRef
   , Inject = ng.core.Inject
   , RESTService = require('./rest')
+  , UIService = require('./ui')
+  , CommunityService = require('./community')
   , User = require('../models/user')
   , Rx = require('rxjs')
 ;
 
 var AuthService = ng.core.Class({
   extends: RESTService,
-  constructor: [Http, function(http){
+  constructor: [Http, UIService, CommunityService,
+    function(http, uiService, communityService){
     var self = this;
     RESTService.call(this, http);
     this.resourceUrl = 'auth';
 
-    this._refresh = new Rx.Subject();
+    this._uiService = uiService;
+    this._communityService = communityService;
 
-    this._authUser = null;
-
-    this.initEventEmitters();
+    uiService.authService$.subscribe(function(event) {
+      if (event.type === 'refreshAuthUser') {
+        self.refreshAuthUser().subscribe();
+      }
+    })
   }],
   modelClass: function() {
     return User;
   },
-  initEventEmitters: function() {
-    var self = this;
-
-    this.authUser$ = this._refresh.startWith(null).flatMap(function() {
-      return self.detail(null, {
-        search: {
-          populate: JSON.stringify('memberships.community'),
-        },
-      });
+  refreshAuthUser: function() {
+    var uiService = this._uiService
+      , communityService = this._communityService;
+    ;
+    return this.detail(null, {
+      search: {
+        populate: JSON.stringify('memberships.community'),
+      },
     }).map(function(authUser) {
-        self._authUser = authUser.isNew() ? null : authUser;
-        return self._authUser;
-      })
-      .publishReplay(1).refCount();
+      if (uiService.state.authUser !== authUser) {
+        if (authUser) {
+          var memberships = _.get(authUser, 'attrs.memberships', []);
+          if (memberships.length === 1) {
+            communityService.selectCommunity(_.get(memberships, '0.community'));
+          }
+          uiService.setState(
+            'myCommunities', 
+            _.map(memberships, function(membership) {
+              return membership.community;
+            })
+          );
+        }
+        uiService.setState('authUser', authUser);
+      }
+      return authUser;
+    });
   },
   refresh: function() {
     this._refresh.next(null);
   },
   logout: function() {
-    var refresh = this._refresh;
+    var self = this;
     this.http.get('/auth/logout/').subscribe(function() {
-      refresh.next(null);
+      self.refreshAuthUser().subscribe();
     });
   },
 });

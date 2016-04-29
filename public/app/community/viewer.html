@@ -4,23 +4,33 @@
   </tc-pane>
   <tc-pane class="text-viewer">
     <div class="transcript-header">
-      <select (change)="revisionChange($event)">
-        <option [value]="0">database revision</option>
-        <option *ngFor="#revision of page.attrs.revisions; #i = index"
-          [value]="i+1">
-          {{revision.attrs.created}}
+      <label>Prev: </label>
+      <select [ngModel]="prevLink?._id" (change)="prevLinkChange($event)">
+        <option *ngFor="#el of prevs" [value]="el._id">
+          {{el.name}} {{el.attrs?.n}}
+        </option>
+      </select>
+
+      <select [ngModel]="revision?.getId()" (change)="revisionChange($event)">
+        <option *ngFor="#r of revisions"
+          [value]="r.getId()" >
+          {{r.attrs.user.local.name}}
+          {{formatDate(r.attrs.created)}} ({{r.attrs.status}})
         </option>
       </select>
       <label>Compare With: </label>
-      <select (change)="revisionCompareChange($event)">
-        <option [value]="0">database revision</option>
-        <option *ngFor="#revision of page.attrs.revisions; #i = index"
-          [value]="i+1">
-          {{revision.attrs.created}}
+      <select (change)="revisionChange($event)">
+        <option *ngFor="#r of revisions"
+          [value]="r.getId()" >
+          {{r.attrs.user.local.name}}
+          {{formatDate(r.attrs.created)}} ({{r.attrs.status}})
         </option>
       </select>
     </div>
-    <tc-codemirror class="transcript" [(content)]="page.contentText">
+    <tc-codemirror class="transcript"
+      [smartIndent]="smartIndent"
+      [content]="contentText"
+      (contentChange)="setContentText($event)">
     </tc-codemirror>
     <div class="buttons" *ngIf="page">
       <button type="button" class="btn btn-default btn-xs"

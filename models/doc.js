@@ -4,6 +4,7 @@ var mongoose = require('mongoose')
   , Schema = mongoose.Schema
   , ObjectId = mongoose.Types.ObjectId
   , extendNodeSchema = require('./extend-node-schema')
+  , libxml = require('libxmljs')
   , Error = require('../common/error')
   , TEI = require('./tei')
 ;
@@ -13,7 +14,9 @@ const CheckLinkError = Error.extend('CheckLinkError');
 var DocSchema = extendNodeSchema('Doc', {
   name: String,
   label: String,
+  header: String,
   image: Schema.Types.ObjectId,
+  meta: Schema.Types.Mixed,
 }, {
   methods: {
     _commit: function(teiRoot, docRoot, leftBound, rightBound, callback) {
@@ -53,8 +56,6 @@ var DocSchema = extendNodeSchema('Doc', {
             });
             if (!_.isEmpty(leftBound)) {
               tei.attrs = {n: self.name};
-              console.log('777777777777777');
-              console.log(leftBound);
               if (leftBound.length === 1) {
                 TEI.insertFirst(_.last(leftBound), tei, callback);
               } else {
@@ -67,7 +68,8 @@ var DocSchema = extendNodeSchema('Doc', {
         );
       }
 
-      _checkLinks(docEl, leftBound, rightBound, teiRoot);
+      let boundsMap = _boundsMap(leftBound, rightBound);
+      let errors = _linkBounds(docEl, leftBound, rightBound, teiRoot);
 
       // load docs
       docs = Doc._loadNodesFromTree(docRoot);
@@ -79,12 +81,7 @@ var DocSchema = extendNodeSchema('Doc', {
       // load teis
 
       _.dfs([teiRoot], function(el) {
-        let cur = TEI.clean(el)
-          , deleteChildren = el._children
-          , prevChildren = []
-          , nextChildren = []
-          , _children = []
-        ;
+        let cur = TEI.clean(el);
         if (!el.children) {
           el.children = [];
         }
@@ -96,52 +93,35 @@ var DocSchema = extendNodeSchema('Doc', {
             new ObjectId(el.entity));
         }
         cur.children = TEI._loadChildren(cur);
-        console.log('@@@@@@@@@@@@');
-        console.log(el);
-        if (_.isNumber(el.prevChild) || _.isNumber(el.nextChild)) {
-          if (el.prevChild !== el.nextChild) {
-            if (_.isNumber(el.prevChild)) {
-              prevChildren = el._children.slice(0, el.prevChild + 1);
-              deleteChildren = deleteChildren.slice(el.prevChild + 1);
-            }
-            if (_.isNumber(el.nextChild)) {
-              nextChildren = el._children.slice(el.nextChild);
-              deleteChildren = deleteChildren.slice(
-                0, deleteChildren.length - nextChildren.length);
-            }
-            _children = _.map(cur.children, function(child) {
-              return child;
-            });
-            console.log('%%%%%%%%%%%%%%%%%%%%%%%');
-            console.log(prevChildren);
-            console.log(cur.children);
-            console.log(nextChildren);
-            if (_idEqual(_.first(_children), _.last(prevChildren))) {
-              _children.shift();
-            }
-            if (_idEqual(_.last(_children), _.first(nextChildren))) {
-              _children.pop();
-            }
-            _children = prevChildren.concat(_children, nextChildren);
-            console.log(_children);
-            if (_children.length > 0) {
-              updateTeis.push({
-                _id: cur._id,
-                children: _children,
-              });
-            }
-            console.log(deleteChildren);
-            deleteTeis = deleteTeis.concat(deleteChildren);
+        if (el._bound) {
+          let item = boundsMap[el._id.toString()];
+          if (item.el) {
+            errors.push(`continue element ${_el2str(el)} break on page`);
+          } else {
+            item.el = el;
+            item.newChildren = cur.children;
           }
         } else {
           insertTeis.push(cur);
         }
+        _.each(el.children, function(child, i) {
+          child.prev = el.children[i-1];
+          child.next = el.children[i+1];
+        });
       });
+
+      let results = _parseBound(boundsMap);
+      errors = errors.concat(results.errors);
+      deleteTeis = deleteTeis.concat(results.deleteTeis);
+      updateTeis = results.updateTeis;
+
+      if (errors.length > 0) {
+        return callback(new CheckLinkError(errors.join('<br/>')));
+      }
+
       async.parallel([
         function(cb1) {
           self.children = docRoot.children;
-          console.log('--------self--------');
-          console.log(self);
           self.save(function(err) {
             console.log('save done');
             cb1(err, self);
@@ -149,8 +129,6 @@ var DocSchema = extendNodeSchema('Doc', {
         },
         function(cb1) {
           if (docs.length > 0) {
-            console.log('--------docs--------');
-            console.log(docs);
             Doc.collection.insert(docs, function(err) {
               console.log('docs done');
               cb1(err);
@@ -165,8 +143,6 @@ var DocSchema = extendNodeSchema('Doc', {
         },
         function(cb1) {
           if (deleteTeis.length > 0) {
-            console.log('--------deleteTeis--------');
-            console.log(deleteTeis);
             TEI.collection.remove({
               $or: [
                 {ancestors: {$in: deleteTeis}},
@@ -182,12 +158,10 @@ var DocSchema = extendNodeSchema('Doc', {
         },
         function(cb1) {
           if (updateTeis.length > 0) {
-            console.log('--------updateTeis--------');
-            console.log(updateTeis);
-            async.forEachOf(updateTeis, function(tei) {
+            async.forEachOf(updateTeis, function(up) {
               const cb2 = _.last(arguments);
-              TEI.collection.update({_id: tei._id}, {
-                $set: {children: tei.children},
+              TEI.collection.update({_id: up._id}, {
+                $set: {children: up.children},
               }, cb2);
             }, function(err) {
               console.log('update teis done');
@@ -199,8 +173,6 @@ var DocSchema = extendNodeSchema('Doc', {
         },
         function(cb1) {
           if (insertTeis.length > 0) {
-            console.log('--------insertTeis--------');
-            console.log(insertTeis);
             TEI.collection.insert(insertTeis, function(err) {
               console.log('insert done');
               cb1(err);
@@ -215,6 +187,7 @@ var DocSchema = extendNodeSchema('Doc', {
       var self = this
         , teiRoot = data.tei || {}
         , docRoot = _.defaults(data.doc, self.toObject()) 
+        , revision = data.revision
       ;
       async.waterfall([
         function(cb) {
@@ -232,7 +205,9 @@ var DocSchema = extendNodeSchema('Doc', {
               });
             });
           }
-          self._commit(teiRoot, docRoot, leftBound, rightBound, cb);
+          self._commit(teiRoot, docRoot, leftBound, rightBound, function(err) {
+            return cb(err, self);
+          });
         },
       ], callback);
     },
@@ -250,32 +225,50 @@ var DocSchema = extendNodeSchema('Doc', {
       this._assignId(nodeData);
       return nodeData;
     },
+    getTexts: function(id, callback) {
+      let results = [];
+      async.waterfall([
+        function(cb) {
+          TEI.find({docs: id, children: []}, cb);
+        },
+        function(nodes) {
+          const cb = _.last(arguments);
+          results = nodes;
+          console.log('nodes');
+          console.log(nodes.length);
+          TEI.getAncestorsFromLeaves(nodes, cb);
+        },
+        function(ancestors) {
+          const cb = _.last(arguments);
+          console.log('ancestors');
+          console.log(ancestors.length);
+          cb(null, ancestors.concat(results));
+        },
+      ], callback);
+    },
     getTextsLeaves: function(id, callback) {
       async.waterfall([
         function(cb) {
-          console.log('--------------');
-          console.log(id);
           TEI.find({docs: id}, cb);
         },
         function(texts) {
-          console.log(texts);
           const cb = _.last(arguments);
           TEI.orderLeaves(texts, cb);
         }
       ], callback);
     },
+    /*
+    * example: <div1>
+    *            <div2>
+    *              <pb n="1"/><ab1><t1/></ab1>
+    *              <pb n="2"/>
+    *            <div2>
+    *            <t2/>
+    *            <pb n="3"/>
+    *          </div1>
+    *  should return [div1, div2 ab1, t1], [div1, pb]
+    */
     getOutterTextBounds: function(id, callback) {
-      /*
-      * example: <div1>
-      *            <div2>
-      *              <pb n="1"/><ab1><t1/></ab1>
-      *              <pb n="2"/>
-      *            <div2>
-      *            <t2/>
-      *            <pb n="3"/>
-      *          </div1>
-      *  should return [div1, div2 ab1, t1], [div1]
-      */
       const cls = this;
       async.parallel([
         function(cb) {
@@ -285,10 +278,6 @@ var DocSchema = extendNodeSchema('Doc', {
           cls.getRightTextBound(id, cb);
         },
       ], function(err, results) {
-        console.log('left bounds');
-        console.log(results[0]);
-        console.log('right bounds');
-        console.log(results[1]);
         callback(err, results[0], results[1]);
       });
     },
@@ -300,9 +289,6 @@ var DocSchema = extendNodeSchema('Doc', {
         },
         function(parent, index) {
           const cb = _.last(arguments);
-          console.log('p and i');
-          console.log(parent);
-          console.log(index);
           if (!parent) {
             cb(null, []);
           } else if (index === 0) {
@@ -389,15 +375,12 @@ var DocSchema = extendNodeSchema('Doc', {
     },
     getLastTextPath: function(id, callback) {
       const cls = this;
-      console.log('getLastTextPath');
       async.waterfall([
         function(cb) {
           cls.getLastText(id, cb);
         },
         function(node) {
           const cb = _.last(arguments);
-          console.log('last text');
-          console.log(node);
           if (node) {
             TEI.getAncestors(node._id, function(err, ancestors) {
               cb(err, (ancestors || []).concat(node));
@@ -471,103 +454,9 @@ var DocSchema = extendNodeSchema('Doc', {
         Entity.find({_id: {$in: result.values}}).exec(callback);
       });
     },
-    getPrevTexts: function(id, callback) {
-      async.waterfall([
-        function(cb) {
-          Doc.getDFSPrev(id, cb);
-        },
-        function(doc, cb) {
-          if (!doc) {
-            return cb(null, null);
-          }
-          TEI.find({docs: doc.ancestors.concat(doc._id)}).exec(cb);
-        },
-        function(teiLeaves, cb) {
-          if (teiLeaves) {
-            TEI.getTreeFromLeaves(teiLeaves, cb);
-          } else {
-            cb(null, null);
-          }
-        },
-      ], function(err, teiRoot) {
-        if (err || !teiRoot) {
-          return callback(err, []);
-        }
-        var cur = teiRoot
-          , prevs = [cur]
-          , index
-        ;
-        while ((cur.children || []).length > 0) {
-          index = _.findLastIndex(cur.children, function(child) {
-            return !(_.isString(child) || child instanceof ObjectId) &&
-              !(child.name === '#text' && child.text.trim() === '');
-          });
-          if (index !== -1) {
-            cur = cur.children[index];
-            prevs.push(cur);
-          } else {
-            break;
-          }
-        }
-        callback(err, prevs);
-      });
-    },
-    getNextTexts: function(id, callback) {
-      async.waterfall([
-        function(cb) {
-          Doc.findOne({children: id}).exec(cb);
-        },
-        function(parent, cb) {
-          var index;
-          if (parent) {
-            index = _.findIndex(parent.children, function(child) {
-              return child.equals(id);
-            });
-            if (parent.children.length > index+1) {
-              return Doc.findOne(parent.children[index+1]).exec(cb);
-            }
-            // TODO no siblings
-          }
-          return cb(null, null);
-        },
-        function(doc, cb) {
-          if (!doc) {
-            return cb(null, null);
-          }
-          TEI.find({docs: doc.ancestors.concat(doc._id)}).exec(cb);
-        },
-        function(teiLeaves, cb) {
-          if (teiLeaves) {
-            TEI.getTreeFromLeaves(teiLeaves, cb);
-          } else {
-            cb(null, null);
-          }
-        },
-      ], function(err, teiRoot) {
-        if (err || !teiRoot) {
-          return callback(err, []);
-        }
-        var cur = teiRoot
-          , nexts = [cur]
-          , index
-        ;
-        while ((cur.children || []).length > 0) {
-          index = _.findIndex(cur.children, function(child) {
-            return !(_.isString(child) || child instanceof ObjectId) &&
-              !(child.name === '#text' && child.text.trim() === '');
-          });
-          if (index !== -1) {
-            cur = cur.children[index];
-            nexts.push(cur);
-          } else {
-            break;
-          }
-        }
-        callback(err, nexts);
-      });
-    },
   }
 });
+
 
 function _isContinueEl(el1, el2) {
   const attrs1 = _.get(el1, 'attrs', {})
@@ -577,72 +466,76 @@ function _isContinueEl(el1, el2) {
     attrs1.n === attrs2.n;
 }
 
-function _elAssign(el, node) {
-  el._id = node._id;
-  el._children = node.children;
-}
 
 function _idEqual(id1, id2) {
   return ObjectId.isValid(id1) && ObjectId.isValid(id2) && 
     (new ObjectId(id1)).equals(id2);
 }
 
-function _checkLinks(docEl, prevs, nexts, teiRoot) {
-  var cur = teiRoot
-    , continueTeis = {}
-  ;
-  console.log('check ...');
-  console.log(docEl);
+function _el2str(el) {
+  return `${el.name}`
+}
+
+function _boundsMap(leftBound, rightBound) {
+  const boundsMap = {};
+  _.each(leftBound, function(bound, i) {
+    let child = leftBound[i+1];
+    let item = boundsMap[bound._id.toString()] = {
+      bound: bound,
+    };
+    if (child) {
+      let index = _.findIndex(bound.children, function(id) {
+        return _idEqual(id, child._id);
+      });
+      item.prevChild = index;
+    }
+  });
+  _.each(rightBound, function(bound, i) {
+    let child = rightBound[i+1];
+    let item = boundsMap[bound._id.toString()];
+    if (!item) {
+      item = boundsMap[bound._id.toString()] = {
+        bound: bound,
+      };
+    }
+    if (child) {
+      let index = _.findIndex(bound.children, function(id) {
+        return _idEqual(id, child._id);
+      });
+      item.nextChild = index;
+    }
+  });
+  return boundsMap;
+}
+
+function _linkBounds(docEl, leftBound, rightBound, teiRoot) {
+  let errors = [];
   _.dfs([teiRoot], function(el) {
-    console.log('el');
-    console.log(el);
     if (_isContinueEl(docEl, el)) {
       return false;
-    }
-    let bound = prevs.shift()
-      , continueChild, index
-    ;
-    console.log(bound);
-    console.log(_.first(prevs));
-    if (bound && _isContinueEl(bound, el)) {
-      _elAssign(el, bound);
-      continueChild = _.first(prevs);
-      if (continueChild) {
-        el.prevChild = _.findIndex(bound.children, function(id) {
-          return _idEqual(id, continueChild._id);
-        });
-      } else {
-        el.prevChild = -1;
-      }
     } else {
-      let en = _.get(el, 'attrs.n')
-        , bn = _.get(bound, 'attrs.n')
-      ;
-      bound = bound || {};
-      throw new CheckLinkError(
-        `prevs element is not match: ${el.name} ${en}, ${bound.name} ${bn}`);
+      let bound = leftBound.shift();
+      if (bound && _isContinueEl(bound, el)) {
+        el._id = bound._id;
+        el._bound = true;
+      } else {
+        errors.push(`prev page element is not match: 
+                    ${_el2str(el)} ${_el2str(bound)}`);
+      }
     }
   });
 
   _.dfs([teiRoot], function(el) {
-    let bound = nexts.shift()
-      , continueChild
-    ;
-    if (!bound || nexts.length === 0) {
-      return false;
-    }
-    if (_isContinueEl(bound, el) && bound.name !== docEl.label) {
-      _elAssign(el, bound);
-      continueChild = _.first(nexts);
-      if (continueChild) {
-        el.nextChild = _.findIndex(bound.children, function(id) {
-          return _idEqual(id, continueChild._id);
-        });
+    if (rightBound.length > 1) {
+      let bound = rightBound.shift();
+      if (_isContinueEl(bound, el)) {
+        el._id = bound._id;
+        el._bound = true;
+      } else {
+        return false;
       }
     } else {
-      bound = bound || {};
-      throw new CheckLinkError(
-        `nexts element is not match: ${el.name}, ${bound.name}`);
+      return false;
     }
   }, function(el) {
     let children = [];
@@ -651,6 +544,70 @@ function _checkLinks(docEl, prevs, nexts, teiRoot) {
     });
     return children;
   });
+  
+  return errors;
+}
+
+function _parseBound(boundsMap) {
+  let errors = []
+    , deleteTeis = []
+    , updateTeis = []
+  ;
+  _.each(boundsMap, function(item) {
+    let bound = item.bound
+      , el = item.el
+      , prevChild = item.prevChild
+      , nextChild = item.nextChild
+      , newChildren = item.newChildren || []
+      , deleteChildren = bound.children
+      , prevChildren = []
+      , nextChildren = []
+      , _children = []
+    ;
+    if (!el && _.isNumber(prevChild) && _.isNumber(nextChild)) {
+      errors.push(`${_el2str(bound)} element missing`);
+    }
+    if (_.isNumber(prevChild)) {
+      if (el && el.prev) {
+        errors.push(
+          `prev page element can not have prev sibling: ${_el2str(el)}`);
+      }
+      prevChildren = bound.children.slice(0, prevChild + 1);
+      deleteChildren = deleteChildren.slice(prevChild + 1);
+    }
+    if (_.isNumber(nextChild)) {
+      if (el && el.next) {
+        errors.push(
+          `next page element can not have next sibling: ${_el2str(el)}`);
+      }
+      nextChildren = bound.children.slice(nextChild);
+      deleteChildren = deleteChildren.slice(
+        0, deleteChildren.length - nextChildren.length);
+    }
+    if (!_.isNumber(prevChild) || prevChild !== nextChild) {
+      if (_idEqual(_.first(newChildren), _.last(prevChildren))) {
+        _children = prevChildren.concat(newChildren.slice(1));
+      } else {
+        _children = prevChildren.concat(newChildren);
+      }
+      if (_idEqual(_.last(_children), _.first(nextChildren))) {
+        _children.pop();
+      }
+      _children = _children.concat(nextChildren);
+      if (!_.isEqual(_children, bound.children)) {
+        updateTeis.push({
+          _id: bound._id,
+          children: _children,
+        });
+      }
+      deleteTeis = deleteTeis.concat(deleteChildren);
+    }
+  });
+  return {
+    errors: errors,
+    updateTeis: updateTeis,
+    deleteTeis: deleteTeis,
+  };
 }
 
 const Doc = mongoose.model('Doc', DocSchema);

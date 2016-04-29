@@ -2,7 +2,7 @@ var $ = require('jquery');
 var URI = require('urijs')
   , UIService = require('./services/ui')
   , CommunityService = require('./services/community')
-  , AuthService = require('./services/auth')
+  , RESTService = require('./services/rest')
 ;
 //require('jquery-ui/draggable');
 //require('jquery-ui/resizable');
@@ -21,11 +21,13 @@ var ManageModalComponent = ng.core.Component({
     require('./viewmembers.component'),
     require('./previewpage.component'),
     require('./parsexmlload.component'),
-    require('./messagelogin.component')
+    require('./messagelogin.component'),
+    require('./community/uploadfile.component'),
   ],
 }).Class({
-  constructor: [CommunityService, AuthService, UIService, function(communityService, authService, uiService) {
+  constructor: [CommunityService, UIService, RESTService, function(communityService, uiService, restService) {
     this._uiService = uiService;
+    this.restService=restService;
 /*
     this.loginFrame = '/auth?url=/index.html#/home';
     this.loginFrameHeight = 233; */
@@ -45,6 +47,34 @@ var ManageModalComponent = ng.core.Component({
       } else if (event.type === 'message-login') {
         self.choice = event.type;
         self.community = event.community;
+      } else if (event.type === 'add-xml-document') {
+        self.choice = event.type;
+        self.community = event.community;
+      } else if (event.type === 'message-login') {
+        self.choice = event.type;
+        self.community = event.community;
+      }  else if (event.type === 'uploadfile-community') {
+        self.choice = event.type;
+        self.community = event.community;
+        self.filetype = event.filetype;
+        if (event.filetype=="css") {
+            if (!event.community.attrs.css || event.community.attrs.css=="") {
+              self.restService.http.get('/app/directives/default.css').subscribe(function(cssfile) {
+                self.text=cssfile._body;});
+            } else self.text=event.community.attrs.css;
+        }
+        if (event.filetype=="js") {
+            if (!event.community.attrs.js || event.community.attrs.js=="") {
+              self.restService.http.get('/app/directives/default.js').subscribe(function(jsfile) {
+                self.text=jsfile._body;});
+            } else self.text=event.community.attrs.js;
+        }
+        if (event.filetype=="dtd") {
+            if (!event.community.attrs.dtd || event.community.attrs.dtd=="") {
+              self.restService.http.get('/app/directives/default.dtd').subscribe(function(dtdfile) {
+                self.text=dtdfile._body;});
+            } else self.text=event.community.attrs.dtd;
+        }
       }  else if (event.type === 'preview-page') {
           self.choice = event.type;
           self.page = event.page;

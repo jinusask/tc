@@ -11,7 +11,7 @@ const _ = require('lodash')
   , TEI = models.TEI
 ;
 
-const FooError = Error.extend('FooError');
+const ParameterError = Error.extend('ParameterError');
 
 router.use(function(req, res, next) {
   res.set({
@@ -66,7 +66,8 @@ function _getDependency(req, doc, callback) {
     if (!!(parent || after) === !!community) {
       // only need community when create root document
       // Don't need community if given parent or after
-      return callback(new FooError());
+      return callback(new ParameterError(
+        'should not use parent/after/community at same time'));
     } else {
       callback(null, parent, after, community);
     }
@@ -107,36 +108,49 @@ var DocResource = _.inherit(Resource, function(opts) {
               },
               function(cb1) {
                 obj.save(function(err, doc) {
-                  console.log('2222222222222');
-                  console.log(doc);
                   cb1(err, doc);
                 });
               },
             ], function(err, results) {
-                  console.log('333333333333333');
-              console.log(results);
               cb(err, _.get(results, 1));
             });
           }
         },
       ], function(err, doc) {
-                  console.log('4444444444444444');
-                  console.log(err);
-        console.log(doc);
         callback(err, doc);
       });
     };
   },
   execSave: function(req, res, next) {
     return function(obj, callback) {
-      console.log('11111111');
-      console.log(obj);
-      obj.commit({
-        tei: req.body.tei,
-        doc: _.assign(req.body.doc, {_id: obj._id}),
-      }, function(err) {
-       callback(err, obj); 
-      });
+      return async.waterfall([
+        function(cb) {
+          obj.commit({
+            revision: req.body.revision,
+            tei: req.body.tei,
+            doc: _.assign(req.body.doc, {_id: obj._id}),
+          }, cb);         
+        },
+        function(doc) {
+          const cb = _.last(arguments);
+          if (req.body.revision) {
+            Revision.update({_id: req.body.revision}, {
+              committed: new Date(),
+              status: 'COMMITTED',
+            }, cb);
+          } else {
+            doc.meta = {
+              committed: new Date(),
+              user: req.user._id,
+            }
+            doc.save(cb);
+          }
+        },
+        function() {
+          const cb = _.last(arguments);
+          cb(null, obj);
+        }
+      ], callback);
     };
   },
 });
@@ -144,58 +158,28 @@ var DocResource = _.inherit(Resource, function(opts) {
 
 var docResource = new DocResource({id: 'doc'});
 docResource.serve(router, '');
-router.get('/:id/entities/:entityId?', function(req, res, next) {
-  var docId = req.params.id
-    , entityId = req.params.entityId
-  ;
-  Doc.getEntities(docId, entityId, function(err, entities) {
-    if (err) {
-      return next(err);
-    }
-    res.json(entities);
-  });
-});
-router.get('/:id/revisions', function(req, res, next) {
-  let docId = req.params.id
-    , results = []
-  ;
-  Revision.find({doc: docId}, function(err, revisions) {
-    if (err) return next(err);
-    res.json(revisions);
-  });
-});
 router.get('/:id/texts', function(req, res, next) {
-  let docId = req.params.id
-    , results = []
-  ;
-  async.waterfall([
-    function(cb) {
-      Doc.getTextsLeaves(docId, cb);
-    },
-    function(leaves) {
-      const cb = _.last(arguments);
-      results = leaves;
-      TEI.getAncestorsFromLeaves(leaves, cb);
-    },
-  ], function(err, ancestors) {
-    if (err) {
+  console.log('get texts');
+  Doc.getTexts(req.params.id, function(err, texts) {
+     if (err) {
       next(err);
     } else {
-      res.json(ancestors.concat(results));
+      console.log(texts.length);
+      res.json(texts);
     }
   });
 });
+
 
 router.get('/:id/links', function(req, res, next) {
   var docId = req.params.id;
-
-  Doc.getOutterBoundTexts(docId, function(err, bounds) {
+  Doc.getOutterTextBounds(docId, function(err, leftBound, rightBound) {
     if (err) {
       return next(err);
     }
     res.json({
-      prev: bounds[0],
-      next: bounds[1],
+      prevs: leftBound,
+      nexts: rightBound,
     });
   });
 });

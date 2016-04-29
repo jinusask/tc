@@ -11,7 +11,7 @@
               role="button" aria-haspopup="true" aria-expanded="false">
               Public Communities <span class="caret"></span></a>
             <ul class="dropdown-menu">
-              <li *ngFor="#community of publicCommunities">
+              <li *ngFor="#community of state.publicCommunities">
                 <a [routerLink]="['Community',
                   {id: community.getId(), route: 'home'}]">
                   {{community.attrs.name}}</a>
@@ -24,7 +24,7 @@
               <span class="glyphicon glyphicon-log-in"></span> Log In
             </a>
           </li>
-          <template [ngIf]="authUser && authUser.attrs.local && authUser.attrs.local.authenticated=='1'">
+          <template [ngIf]="isAuthenticated()">
             <li class="dropdown">
               <a class="dropdown-toggle" data-toggle="dropdown"
                 role="button" aria-haspopup="true" aria-expanded="false">
@@ -35,7 +35,7 @@
                   <a [routerLink]="['CreateCommunity']">Create Community</a>
                 </li>
                 <li role="separator" class="divider"></li>
-                <li *ngFor="#membership of authUser.attrs.memberships;">
+                <li *ngFor="#membership of state.authUser.attrs.memberships">
                   <a [routerLink]="['Community',
                     {id: membership.community.getId(), route: 'home'}]">
                     {{membership.community.attrs.name}}
@@ -46,7 +46,7 @@
             <li class="dropdown">
               <a class="dropdown-toggle" data-toggle="dropdown"
                 role="button" aria-haspopup="true" aria-expanded="false">
-                {{authUser.getName()}} <span class="caret"></span>
+                {{state.authUser.getName()}} <span class="caret"></span>
               </a>
               <ul class="dropdown-menu">
                 <li><a (click)="logout()">Log Out</a></li>
@@ -74,14 +74,14 @@
 </div>
 <div style="margin-right:auto; font: 15px/26px 'Open Sans', Helvetica, Helvetica Neue, Arial; margin-left:auto; width:100%; padding-top: 10px;   padding-bottom: 1px; background-color: #00446d">
   <p style="font-size:200%; text-align: center; margin-bottom: 5px; padding-bottom:0px; color: white">Textual Communities</p>
-  <p *ngIf="authUser" style=" text-align: center; margin-bottom: 5px; padding-bottom:0px;" class="wizardp">
+  <p *ngIf="state.authUser" style=" text-align: center; margin-bottom: 5px; padding-bottom:0px;" class="wizardp">
     <seg *ngIf="showCreateOrJoin()">
       You do not lead or belong to any communities</seg>
     <seg *ngIf="showAddDocument()">
-    You have a community ("{{uiService.community?.attrs.name}}"),
+    You have a community ("{{state.community?.attrs.name}}"),
       but there are no documents in it</seg>
     <seg *ngIf="showAddPage()">
-      You have a community ("{{uiService.community?.attrs.name}}") with a document ("{{uiService.document?.attrs.name}}"),
+      You have a community ("{{state.community?.attrs.name}}") with a document ("{{state.document?.attrs.name}}"),
       but there are no pages in it</seg>
       <!--><seg>Make the edition you want</seg></-->
   </p>
@@ -95,7 +95,7 @@
       style="width: 100px;">Start</button>
   </a>
 </div>
-<div *ngIf="authUser" class="wizard">
+<div *ngIf="state.authUser" class="wizard">
   <p *ngIf="showCreateOrJoin()" class="wizardp">
     <a *ngIf="createNotChosenF()" [routerLink]="['CreateCommunity']">
       <button class="btn btn-lg wizardbutton"
